@@ -1,0 +1,49 @@
+import pandas as pd
+from modules import (
+    vm_validator,
+    # sqldb_validator,
+    # rg_validator,
+    # storage_validator,
+    # webapp_validator,
+    # function_validator,
+    # keyvault_validator,
+    # appinsights_validator,
+    # notificationhub_validator
+)
+
+VERTICAL_SHEETS = {
+    'IaaS VM': vm_validator.validate_vm,
+    # 'SQL DB PaaS': sqldb_validator.validate_sqldb,
+    # 'Resource Group': rg_validator.validate_rg,
+    # 'Storage Account': storage_validator.validate_storage,
+    # 'WebApp': webapp_validator.validate_webapp,
+    # 'Azure Function': function_validator.validate_function,
+    # 'keyVault': keyvault_validator.validate_keyvault,
+    # 'AppInsights': appinsights_validator.validate_appinsights,
+    # 'Notfication Hub': notificationhub_validator.validate_notificationhub
+}
+
+def main(build_sheet_path, output_path):
+    excel = pd.ExcelFile(build_sheet_path)
+    with pd.ExcelWriter(output_path, engine='xlsxwriter') as writer:
+        for sheet_name, validator_func in VERTICAL_SHEETS.items():
+            if sheet_name in excel.sheet_names:
+                df = excel.parse(sheet_name)
+                try:
+                    results = validator_func(df)
+                except Exception as e:
+                    results = [{
+                        "Resource Name": "N/A",
+                        "Status": "Error",
+                        "Mismatched Fields": str(e)
+                    }]
+                pd.DataFrame(results).to_excel(writer, sheet_name=sheet_name, index=False)
+
+if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--input', required=True, help='Path to build sheet')
+    parser.add_argument('--output', required=True, help='Path to validation report')
+    args = parser.parse_args()
+    main(args.input, args.output)
+
