@@ -1,0 +1,102 @@
+name: Build sheet validation
+trigger: none
+
+variables:
+  - name: Major
+    value: 1
+  - name: Minor
+    value: 0
+  - name: Patch
+    value: $[counter(format('{0}.{1}', variables['Major'], variables['Minor']), 0)]
+  - name: ProjectName
+    value: MSP_LandingZone
+  - name: CompanyName
+    value: MPG
+  - name: CAF_ENV
+    value: msp
+  - name: Environment
+    value: Test
+  - group: "CAFLandingZones"
+  - group: "AzureBuildPipeCreds"
+
+parameters:
+  - name: storageAccountName
+    type: string
+  - name: containerName
+    type: string
+  - name: ritmId
+    displayName: 'RITM ID (e.g. RITM0663329)'
+    type: string
+
+pool:
+  vmImage: ubuntu-latest
+
+steps:
+- bash: |
+    az login --service-principal --username $(CAF_SP_CLIENTID) --password $(CAF_SP_SECRET) --tenant $(LAUNCHPAD_TENANTID)
+    az account set --subscription $(LAUNCHPAD_SUBSCRIPTION_ID)
+  failOnStderr: true
+  displayName: 'Login to Azure'
+
+- task: UsePythonVersion@0
+  inputs:
+    versionSpec: '3.10'
+  displayName: 'Use Python 3.10'
+
+- script: |
+    python -m pip install --upgrade pip
+    pip install pandas openpyxl azure-identity azure-mgmt-compute azure-mgmt-sql azure-mgmt-resource azure-mgmt-storage azure-mgmt-web xlsxwriter
+  displayName: 'Install dependencies'
+
+- task: AzureCLI@2
+  inputs:
+    # azureSubscription: '$(System.DefaultConnection)' # Removed to use the login from the bash step
+    scriptType: bash
+    scriptLocation: inlineScript
+    inlineScript: |
+      echo "Searching for blob starting with ${{ parameters.ritmId }} in container ${{ parameters.containerName }}..."
+
+      # List blobs and filter names starting with RITM prefix
+      blobName=$(az storage blob list \
+        --account-name ${{ parameters.storageAccountName }} \
+        --container-name ${{ parameters.containerName }} \
+        --query "[?starts_with(name, '${{ parameters.ritmId }}')].name | [0]" \
+        --output tsv \
+        --auth-mode login) # Uses the AAD principal from 'az login'
+
+      if [ -z "$blobName" ]; then
+        echo "No blob found starting with ${{ parameters.ritmId }}!"
+        exit 1
+      fi
+
+      echo "Found blob: $blobName"
+      
+      # Download the blob as build_sheet.xlsx
+      az storage blob download \
+        --account-name ${{ parameters.storageAccountName }} \
+        --container-name ${{ parameters.containerName }} \
+        --name "$blobName" \
+        --file build_sheet.xlsx \
+        --auth-mode login # Uses the AAD principal from 'az login'
+  displayName: 'Find and download build sheet blob by RITM prefix'
+
+- script: |
+    python validation.py \
+      --input build_sheet.xlsx \
+      --output validation_report.xlsx
+  displayName: 'Run validation'
+
+- task: AzureCLI@2
+  inputs:
+    # azureSubscription: '$(System.DefaultConnection)' # Removed to use the login from the bash step
+    scriptType: bash
+    scriptLocation: inlineScript
+    inlineScript: |
+      az storage blob upload \
+        --account-name ${{ parameters.storageAccountName }} \
+        --container-name ${{ parameters.containerName }} \
+        --name "${{ parameters.ritmId }}_validation_report.xlsx" \
+        --file validation_report.xlsx \
+        --overwrite \
+        --auth-mode login # Uses the AAD principal from 'az login'
+  displayName: 'Upload validation report to storage'
